@@ -17,6 +17,15 @@
 #endif
 #include <GLFW/glfw3.h> // Will drag system OpenGL headers
 
+#include "imipmi.h"
+
+extern "C" {
+// for ipmitool
+int verbose = 0;
+int csv_output = 0;
+}
+
+
 // [Win32] Our example includes a copy of glfw3.lib pre-compiled with VS2010 to maximize ease of testing and compatibility with old VS compilers.
 // To link with VS2010-era libraries, VS2015+ requires linking with legacy_stdio_definitions.lib, which we do using this pragma.
 // Your own project should not be affected, as you are likely to link with a newer binary of GLFW that is adequate for your version of Visual Studio.
@@ -33,6 +42,31 @@ static void glfw_error_callback(int error, const char* description)
 {
     fprintf(stderr, "GLFW Error %d: %s\n", error, description);
 }
+
+
+/*
+
+Example crate with one digitizer AMC
+
+----------------------------------------------
+FRU   type  i2c state sensors name
+----------------------------------------------
+  0   MCH3   80   M4      2   NAT-MCH-CM
+  1 ShFRU1   f4   M0      0   <none>
+  2 ShFRU1   f4   M0      0   <none>
+  3   MCH1   10   M4     14   NAT-MCH-MCMC
+  5   AMC1   72   M4     14   mTCA-EVR-300 
+  6   AMC2   74   M4     12   CCT AM G64/471
+  8   AMC4   78   M4     20   SIS8300KU AMC
+ 31 ShFRU1   a6   M0      0   <none>
+ 40    CU1   a8   M4     14   Schroff uTCA CU
+ 50    PM1   c2   M4     32   NAT-PM-AC600D
+ 61   MCH1   16   M4     12   MCH-PCIe
+ 93   RTM4   78   M4      5   <none>
+253 ShFRU1   f4   M0      0   <Carrier FRU>
+254 ShFRU1   f4   M0      0   <Shelf FRU>
+----------------------------------------------
+*/
 
 // Main code
 int main(int, char**)
@@ -111,6 +145,12 @@ int main(int, char**)
     bool show_another_window = false;
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
+    // ipmitool
+    ImIpmi *ctx = initContext();
+    // ipmitool
+
+    float keepalive = 0.0;
+
     // Main loop
 #ifdef __EMSCRIPTEN__
     // For an Emscripten build we are disabling file-system access, so let's not attempt to do a fopen() of the imgui.ini file.
@@ -175,6 +215,54 @@ int main(int, char**)
             ImGui::End();
         }
 
+        {
+            ImGui::Begin("Ipmitool debug");
+
+            static char hostname[128] = {0};
+            static ImIpmiHost *host = nullptr;
+            ImGui::InputText("hostname", hostname, IM_ARRAYSIZE(hostname));
+
+            if (ImGui::Button("connect")) {
+                if (strlen(hostname)) {
+                    host = ctx->addHost(hostname);
+                    ImGui::Text("connected");
+                }
+            }
+            if (ImGui::Button("disconnect")) {
+                if (strlen(hostname)) {
+                    ctx->removeHost(hostname);
+                    host = nullptr;
+                    ImGui::Text("disconnected");
+                }
+            }
+
+            if (ImGui::Button("sdr list")) {
+                if (host) {
+                    host->bridge(0);
+                    host->list_sdr();
+                }
+            }
+
+            static int target = 0;
+            ImGui::InputInt("target [hex]", &target, 1, 16, ImGuiInputTextFlags_CharsHexadecimal);
+            if (ImGui::Button("sdr list target")) {
+                if (host) {
+                    host->bridge(target);
+                    host->list_sdr();
+                }
+            }
+
+            keepalive++;
+            if (keepalive >= io.Framerate) {
+                keepalive = 0.0;
+                if (host) {
+                    host->keepalive();
+                }
+            }
+
+            ImGui::End();
+        }
+
         // Rendering
         ImGui::Render();
         int display_w, display_h;
@@ -189,6 +277,10 @@ int main(int, char**)
 #ifdef __EMSCRIPTEN__
     EMSCRIPTEN_MAINLOOP_END;
 #endif
+
+    // ipmitool
+    destroyContext(ctx);
+    // ipmitool
 
     // Cleanup
     ImGui_ImplOpenGL3_Shutdown();
