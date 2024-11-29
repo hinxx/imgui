@@ -46,7 +46,7 @@ static void glfw_error_callback(int error, const char* description)
 
 /*
 
-Example crate with one digitizer AMC
+Example 3U crate with one digitizer AMC
 
 ----------------------------------------------
 FRU   type  i2c state sensors name
@@ -66,6 +66,199 @@ FRU   type  i2c state sensors name
 253 ShFRU1   f4   M0      0   <Carrier FRU>
 254 ShFRU1   f4   M0      0   <Shelf FRU>
 ----------------------------------------------
+
+ipmitool> sdr elist fru
+SIS8300KU RTM    | 00h | ns  | 192.100 | Logical FRU @01h
+SIS8300KU AMC    | 00h | ns  | 193.100 | Logical FRU @08h
+CCT AM G64/471   | 00h | ns  | 193.98 | Logical FRU @06h
+Schroff uTCA CU  | 00h | ns  | 30.97 | Logical FRU @28h
+NAT-MCH-MCMC     | 00h | ns  | 194.97 | Logical FRU @03h
+mTCA-EVR-300     | 00h | ns  | 193.97 | Logical FRU @05h
+NAT-MCH-CM       | 00h | ns  | 194.102 | Logical FRU @00h
+NAT-PM-AC600D   | 00h | ns  | 10.97 | Logical FRU @32h
+MCH-PCIe         | 00h | ns  | 194.100 | Logical FRU @3Dh
+BP-FRU-253       | 00h | ns  | 208.97 | Physical FRU @A4h
+BP-FRU-254       | 00h | ns  | 242.98 | Physical FRU @A4h
+SH-FRU-001       | 00h | ns  | 242.99 | Physical FRU @A4h
+SH-FRU-002       | 00h | ns  | 242.100 | Physical FRU @A4h
+MCH-Clock        | 00h | ns  | 194.99 | Logical FRU @3Ch
+
+ipmitool> sdr list fru
+SIS8300KU RTM    | Log FRU @01h c0.64 | ok
+SIS8300KU AMC    | Log FRU @08h c1.64 | ok
+CCT AM G64/471   | Log FRU @06h c1.62 | ok
+Schroff uTCA CU  | Log FRU @28h 1e.61 | ok
+NAT-MCH-MCMC     | Log FRU @03h c2.61 | ok
+mTCA-EVR-300     | Log FRU @05h c1.61 | ok
+NAT-MCH-CM       | Log FRU @00h c2.66 | ok
+NAT-PM-AC600D   | Log FRU @32h 0a.61 | ok
+MCH-PCIe         | Log FRU @3Dh c2.64 | ok
+BP-FRU-253       | Phy FRU @A4h d0.61 | ok
+BP-FRU-254       | Phy FRU @A4h f2.62 | ok
+SH-FRU-001       | Phy FRU @A4h f2.63 | ok
+SH-FRU-002       | Phy FRU @A4h f2.64 | ok
+MCH-Clock        | Log FRU @3Ch c2.63 | ok
+
+Example 9U crate with four digitizer AMC
+
+----------------------------------------------
+FRU   type  i2c state sensors name
+----------------------------------------------
+  0   MCH3   80   M4      2   NAT-MCH-CM
+  1 ShFRU1   f4   M0      0   <none>
+  2 ShFRU1   f4   M0      0   <none>
+  3   MCH1   10   M4     14   NAT-MCH-MCMC
+  5   AMC1   72   M4     13   CCT AM 900/412
+  6   AMC2   74   M4     14   mTCA-EVR-300 
+  7   AMC3   76   M4     20   SIS8300KU AMC
+  8   AMC4   78   M4     20   SIS8300KU AMC
+  9   AMC5   7a   M4     20   SIS8300KU AMC
+ 10   AMC6   7c   M4     20   SIS8300KU AMC
+ 16   AMC12   88   M1     12   CCT AM G64/471
+ 31 ShFRU1   a6   M0      0   <none>
+ 40    CU1   a8   M4     16   Schroff uTCA CU
+ 41    CU2   aa   M4     16   Schroff uTCA CU
+ 51    PM2   c4   M4     31   PM-AC1000
+ 61   MCH1   16   M4     12   MCH-PCIe
+ 92   RTM3   76   M4      5   <none>
+ 93   RTM4   78   M4      5   <none>
+ 94   RTM5   7a   M4      5   <none>
+ 95   RTM6   7c   M4      5   <none>
+253 ShFRU1   f4   M0      0   <Carrier FRU>
+254 ShFRU1   f4   M0      0   <Shelf FRU>
+----------------------------------------------
+
+ipmitool> sdr elist fru
+SIS8300KU RTM    | 00h | ns  | 192.101 | Logical FRU @01h
+SIS8300KU RTM    | 00h | ns  | 192.102 | Logical FRU @01h
+SIS8300KU RTM    | 00h | ns  | 192.99 | Logical FRU @01h
+SIS8300KU RTM    | 00h | ns  | 192.100 | Logical FRU @01h
+Schroff uTCA CU  | 00h | ns  | 30.98 | Logical FRU @29h
+NAT-MCH-MCMC     | 00h | ns  | 194.97 | Logical FRU @03h
+Schroff uTCA CU  | 00h | ns  | 30.97 | Logical FRU @28h
+CCT AM G64/471   | 00h | ns  | 193.108 | Logical FRU @10h
+CCT AM 900/412   | 00h | ns  | 193.97 | Logical FRU @05h
+SIS8300KU AMC    | 00h | ns  | 193.99 | Logical FRU @07h
+SIS8300KU AMC    | 00h | ns  | 193.102 | Logical FRU @0Ah
+SIS8300KU AMC    | 00h | ns  | 193.101 | Logical FRU @09h
+SIS8300KU AMC    | 00h | ns  | 193.100 | Logical FRU @08h
+mTCA-EVR-300     | 00h | ns  | 193.98 | Logical FRU @06h
+NAT-MCH-CM       | 00h | ns  | 194.102 | Logical FRU @00h
+PM-AC1000        | 00h | ns  | 10.98 | Logical FRU @33h
+MCH-PCIe         | 00h | ns  | 194.100 | Logical FRU @3Dh
+BP-FRU-253       | 00h | ns  | 208.97 | Physical FRU @A4h
+BP-FRU-254       | 00h | ns  | 242.98 | Physical FRU @A4h
+SH-FRU-001       | 00h | ns  | 242.99 | Physical FRU @A4h
+SH-FRU-002       | 00h | ns  | 242.100 | Physical FRU @A4h
+MCH-Clock        | 00h | ns  | 194.99 | Logical FRU @3Ch
+
+ipmitool> sdr list fru
+SIS8300KU RTM    | Log FRU @01h c0.65 | ok
+SIS8300KU RTM    | Log FRU @01h c0.66 | ok
+SIS8300KU RTM    | Log FRU @01h c0.63 | ok
+SIS8300KU RTM    | Log FRU @01h c0.64 | ok
+Schroff uTCA CU  | Log FRU @29h 1e.62 | ok
+NAT-MCH-MCMC     | Log FRU @03h c2.61 | ok
+Schroff uTCA CU  | Log FRU @28h 1e.61 | ok
+CCT AM G64/471   | Log FRU @10h c1.6c | ok
+CCT AM 900/412   | Log FRU @05h c1.61 | ok
+SIS8300KU AMC    | Log FRU @07h c1.63 | ok
+SIS8300KU AMC    | Log FRU @0Ah c1.66 | ok
+SIS8300KU AMC    | Log FRU @09h c1.65 | ok
+SIS8300KU AMC    | Log FRU @08h c1.64 | ok
+mTCA-EVR-300     | Log FRU @06h c1.62 | ok
+NAT-MCH-CM       | Log FRU @00h c2.66 | ok
+PM-AC1000        | Log FRU @33h 0a.62 | ok
+MCH-PCIe         | Log FRU @3Dh c2.64 | ok
+BP-FRU-253       | Phy FRU @A4h d0.61 | ok
+BP-FRU-254       | Phy FRU @A4h f2.62 | ok
+SH-FRU-001       | Phy FRU @A4h f2.63 | ok
+SH-FRU-002       | Phy FRU @A4h f2.64 | ok
+MCH-Clock        | Log FRU @3Ch c2.63 | ok
+
+Example 9U crate with ten digitizer AMC
+
+----------------------------------------------
+FRU   type  i2c state sensors name
+----------------------------------------------
+  0   MCH3   80   M4      2   NAT-MCH-CM
+  1 ShFRU1   f4   M0      0   <none>
+  2 ShFRU1   f4   M0      0   <none>
+  3   MCH1   10   M4     14   NAT-MCH-MCMC
+  5   AMC1   72   M4     12   CCT AM G64/471
+  6   AMC2   74   M4     14   mTCA-EVR-300 
+  7   AMC3   76   M4     35   DAMC-FMC2ZUP-11E
+  8   AMC4   78   M4     36   DAMC-FMC2ZUP-11E
+  9   AMC5   7a   M4     34   DAMC-FMC2ZUP-11E
+ 10   AMC6   7c   M4     35   DAMC-FMC2ZUP-11E
+ 11   AMC7   7e   M4     35   DAMC-FMC2ZUP-11E
+ 12   AMC8   80   M4     34   DAMC-FMC2ZUP-11E
+ 13   AMC9   82   M4     35   DAMC-FMC2ZUP-11E
+ 14   AMC10   84   M4     36   DAMC-FMC2ZUP-11E
+ 15   AMC11   86   M4     36   DAMC-FMC2ZUP-11E
+ 16   AMC12   88   M4     36   DAMC-FMC2ZUP-11E
+ 31 ShFRU1   a6   M0      0   <none>
+ 40    CU1   a8   M4     16   Schroff uTCA CU
+ 41    CU2   aa   M4     16   Schroff uTCA CU
+ 51    PM2   c4   M4     31   PM-AC1000
+ 53    PM4   c8   M4     31   PM-AC1000
+ 61   MCH1   16   M4     12   MCH-PCIe
+ 96   RTM7   7e   M4      4   <none>
+253 ShFRU1   f4   M0      0   <Carrier FRU>
+254 ShFRU1   f4   M0      0   <Shelf FRU>
+----------------------------------------------
+
+
+HOW TO MAKE SENSE OF ALL THESE NUMBERS???
+
+output of 'sdr list fru' shows instances offset by 0x60.. it seems
+
+--------------------------------------------------------------------------------------
+
+/home/hinxx/Downloads/PICMG_MTCA.0_R1.0_forHinko.pdf
+
+Site Number     The part of a Carrier Local Address that identifies a particular instance of a given FRU
+                Site Type within a MicroTCA Carrier. For instance, Site Number would distinguish
+                among multiple CUs or PMs.
+Site Type       The part of a Carrier Local Address that identifies the type of a FRU site,
+                distinguishing for instance, a AdvancedMC site from a CU site
+EMMC            Enhanced Module Management Controller, used on Cooling Units, Power Module,
+                and OEM Modules. See Module Management Controller (MMC).
+MCMC            MicroTCA Carrier Management Controller (MCMC)
+                Management controller on the MCH. The required management controller that
+                interfaces to AdvancedMC MMCs via IPMB-L and to CU, PM, and OEM Module
+                EMMCs via IPMB-0.
+
+
+REQ 3.392 Each MCMC shall use its own Site Number + 60h as a device-relative entity instance number.
+
+REQ 3.401 Each EMMC shall use its own Site Number + 60h as a device-relative entity instance number.
+
+3.13.4 Carrier Manager SDR requirements
+
+¶ 239 The Carrier Manager uses predefined FRU Device IDs for all Modules installed in a
+MicroTCA Carrier, based on Site Type and Site Number. The local FRU Device ID for an
+(E)MMC is always 0. The Carrier Manager assigns unique FRU Device IDs to all (E)MMCs,
+as specified in Table 3-3, “Carrier Manager FRU Device IDs.” (E)MMC SDRs are linked
+with a Module using the entity fields of the SDR. The Entity ID identifies that SDR as
+coming from an MCH, AdvancedMC, PM, CU or OEM Module FRU, and the entity instance
+is set to the Site Number + 60h. 60h is added to make the entity instance device-relative, in
+accordance with Section 3.4.3 “Entities” in the AdvancedTCA Base specification. Refer to
+this section of the AdvancedTCA specification and to Chapter 33.1 “System- and Device-
+relative Entity Instance Values” of the IPMI specification for more information on IPMI
+entities.
+
+REQ 3.411
+Each Carrier Manager’s Device SDR Repository shall use an Entity ID for a Module as
+defined in Table 3-49, “MicroTCA Entity ID assignments” and the Module Site
+Number + 60h as device-relative entity instances for Module SDRs.
+
+
+--------------------------------------------------------------------------------------
+we can rely on the 'sensor->entity.id' value to determine the 
+type of the FRU and then 'sensor->entity.instance - 0x60' to get
+its instance number; ends up being index x of AMCx, RTMx, CUx, PMx, ..
+
 */
 
 // Main code
@@ -145,11 +338,9 @@ int main(int, char**)
     bool show_another_window = false;
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
-    // ipmitool
     ImIpmi *ctx = initContext();
-    // ipmitool
 
-    float keepalive = 0.0;
+    // float keepalive = 0.0;
 
     // Main loop
 #ifdef __EMSCRIPTEN__
@@ -218,7 +409,7 @@ int main(int, char**)
         {
             ImGui::Begin("Ipmitool debug");
 
-            static char hostname[128] = {0};
+            static char hostname[128] = "172.30.150.51";
             static ImIpmiHost *host = nullptr;
             ImGui::InputText("hostname", hostname, IM_ARRAYSIZE(hostname));
 
@@ -238,8 +429,13 @@ int main(int, char**)
 
             if (ImGui::Button("sdr list")) {
                 if (host) {
-                    host->bridge(0);
-                    host->list_sdr();
+                    // host->bridge(0);
+                    // host->list_sdr();
+                    ImIpmiJob job = {
+                        .mType = ImIpmiJobType_showAllSdr,
+                        .mTarget = 0
+                    };
+                    host->request_work(job);
                 }
             }
 
@@ -247,18 +443,39 @@ int main(int, char**)
             ImGui::InputInt("target [hex]", &target, 1, 16, ImGuiInputTextFlags_CharsHexadecimal);
             if (ImGui::Button("sdr list target")) {
                 if (host) {
-                    host->bridge(target);
-                    host->list_sdr();
+                    // host->bridge(target);
+                    // host->list_sdr();
+                    ImIpmiJob job = {
+                        .mType = ImIpmiJobType_showAllSdr,
+                        .mTarget = target
+                    };
+                    host->request_work(job);
                 }
             }
 
-            keepalive++;
-            if (keepalive >= io.Framerate) {
-                keepalive = 0.0;
+            if (ImGui::Button("sdr init target")) {
                 if (host) {
-                    host->keepalive();
+                    ImIpmiJob job = {
+                        .mType = ImIpmiJobType_initTargetSensors,
+                        .mTarget = target
+                    };
+                    host->request_work(job);
                 }
             }
+
+            if (ImGui::Button("dump")) {
+                if (host) {
+                    host->dump(0);
+                }
+            }
+
+            // keepalive++;
+            // if (keepalive >= io.Framerate) {
+            //     keepalive = 0.0;
+            //     if (host) {
+            //         host->keepalive();
+            //     }
+            // }
 
             ImGui::End();
         }
