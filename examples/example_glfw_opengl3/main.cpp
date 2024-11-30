@@ -17,6 +17,9 @@
 #endif
 #include <GLFW/glfw3.h> // Will drag system OpenGL headers
 
+#include "implot.h"
+#include "imgui-knobs.h"
+
 #include "imipmi.h"
 
 extern "C" {
@@ -371,6 +374,8 @@ int main(int, char**)
     // Setup Dear ImGui context
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
+    ImPlot::CreateContext();
+
     ImGuiIO& io = ImGui::GetIO(); (void)io;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
@@ -405,6 +410,7 @@ int main(int, char**)
 
     // Our state
     bool show_demo_window = true;
+    bool show_demo_window2 = true;
     bool show_another_window = false;
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
@@ -443,6 +449,9 @@ int main(int, char**)
         if (show_demo_window)
             ImGui::ShowDemoWindow(&show_demo_window);
 
+        if (show_demo_window2)
+            ImPlot::ShowDemoWindow(&show_demo_window2);
+
         // 2. Show a simple window that we create ourselves. We use a Begin/End pair to create a named window.
         {
             static float f = 0.0f;
@@ -452,6 +461,7 @@ int main(int, char**)
 
             ImGui::Text("This is some useful text.");               // Display some text (you can use a format strings too)
             ImGui::Checkbox("Demo Window", &show_demo_window);      // Edit bools storing our window open/close state
+            ImGui::Checkbox("Demo Window2", &show_demo_window2);      // Edit bools storing our window open/close state
             ImGui::Checkbox("Another Window", &show_another_window);
 
             ImGui::SliderFloat("float", &f, 0.0f, 1.0f);            // Edit 1 float using a slider from 0.0f to 1.0f
@@ -476,13 +486,13 @@ int main(int, char**)
             ImGui::End();
         }
 
+        static Host *host = nullptr;
         {
             ImGui::Begin("Ipmitool debug");
 
             ImGui::InputInt("verbose", &verbose);
 
             static char hostname[128] = "172.30.150.51";
-            static Host *host = nullptr;
             ImGui::InputText("hostname", hostname, IM_ARRAYSIZE(hostname));
 
             if (ImGui::Button("connect")) {
@@ -514,6 +524,64 @@ int main(int, char**)
                 }
             }
 
+            static float val1 = 0;
+            if (ImGuiKnobs::Knob("Gain", &val1, -6.0f, 6.0f, 0.1f, "%.1fdB", ImGuiKnobVariant_Tick)) {
+                // value was changed
+            }
+            static float val3 = 0;
+            if (ImGuiKnobs::Knob("Pitch", &val3, -6.0f, 6.0f, 0.1f, "%.1f", ImGuiKnobVariant_WiperOnly)) {
+                // value was changed
+            }
+            static float rpmValue = 0;
+            ImGui::SliderFloat("float", &rpmValue, 0.0f, 10000.0f);
+            // ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(255.f, 0, 0, 0.7f));
+            // ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(255.f, 0, 0, 1));
+            // ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 255.f, 0, 1));
+            if (rpmValue > 4444) {
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(255.f, 0, 0, 0.7f));
+            }
+            if (ImGuiKnobs::Knob("RPM", &rpmValue, 0.0f, 10000.0f, 1.0f, "%.0f", ImGuiKnobVariant_WiperOnly, 0.0, ImGuiKnobFlags_NoDrag | ImGuiKnobFlags_NoInput)) {
+                // rpmValue was changed
+            }
+            // ImGui::PopStyleColor(3);
+            if (rpmValue > 4444) {
+                ImGui::PopStyleColor(1);
+            }
+
+            // Int value
+            static int val5 = 1;
+            if (ImGuiKnobs::KnobInt("Wet", &val5, 1, 10, 0.1f, "%i", ImGuiKnobVariant_Stepped, 0, 0, 10)) {
+                // value was changed
+            }
+
+            ImGui::End();
+        }
+
+        {
+            ImGui::Begin("sensors");
+ 
+            if (host) {
+                static int entity_instance = -1;
+                for (auto it = host->sensors.begin(); it != host->sensors.end(); ++it) {
+                    Sensor *s = it->second;
+                    if (s->info.sensorType == 1) {
+                        float v = s->value.value;
+                        if (entity_instance == s->info.entityInstance) {
+                            ImGui::SameLine();
+                        }
+                        if (v > 60) {
+                            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(255.f, 0, 0, 0.7f));
+                        }
+                        ImGuiKnobs::Knob(s->info.name, &v, 0.0f, 100.0f, 1.0f, "%.0f", ImGuiKnobVariant_WiperOnly, 0.0, ImGuiKnobFlags_NoDrag | ImGuiKnobFlags_NoInput);
+                        if (v > 60) {
+                            ImGui::PopStyleColor(1);
+                        }
+                        entity_instance = s->info.entityInstance;
+                    }
+
+                }
+            }
+
             ImGui::End();
         }
 
@@ -540,6 +608,7 @@ int main(int, char**)
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
+    ImPlot::DestroyContext();
 
     glfwDestroyWindow(window);
     glfwTerminate();

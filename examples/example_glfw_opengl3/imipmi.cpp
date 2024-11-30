@@ -165,7 +165,7 @@ void *Host::RunThread() {
             Job &job = *it;
             DEBUG("handling job type %d", job.mType);
             if (job.mType == JobType_listSDR) {
-                ListSDR();
+                ReadSDR();
             }
         }
         local_jobs.clear();
@@ -180,11 +180,7 @@ void *Host::RunThread() {
         while (rc == ETIMEDOUT) {
             KeepAlive();
 
-/*
-            for (auto it = std::begin(mHost->mAllTargetAddresses); it != std::end(mHost->mAllTargetAddresses); ++it) {
-                mHost->update_target_sdr(*it);
-            }
-*/
+            ReadSDR();
 
             struct timespec ts;
             clock_gettime(CLOCK_REALTIME, &ts);
@@ -268,7 +264,7 @@ bool Host::CheckIPMIVersion() {
     return version_accepted;
 }
 
-bool Host::ListSDR() {
+bool Host::ReadSDR() {
     struct sdr_get_rs *header;
     struct ipmi_sdr_iterator *itr;
 
@@ -448,8 +444,8 @@ void Host::Dump() {
 
     for (auto it = sensors.begin(); it != sensors.end(); ++it) {
         Sensor *s = it->second;
-        DEBUG("SENSOR: %s %x.%x (# %ld) %f %s @ %ld %x",
-            s->info.name, s->info.entityId, s->info.entityInstance, s->values.size(), s->values.back().value, s->info.units, s->values.back().ts, s->values.back().status);
+        DEBUG("SENSOR: %s %x.%x   %f %s @ %ld %x",
+            s->info.name, s->info.entityId, s->info.entityInstance, s->value.value, s->info.units, s->value.ts, s->value.status);
     }
 }
 
@@ -492,12 +488,11 @@ void Sensor::SetThresholds(const bool available, const double unr, const double 
     info.lnc = lnc;
 }
 
-void Sensor::AddReading(const double value, const uint64_t ts, const unsigned status) {
+void Sensor::AddReading(const double val, const uint64_t ts, const unsigned status) {
     SensorReading r = {
-        .value = value,
+        .value = val,
         .ts = ts,
         .status = status
     };
-    values.push_back(r);
-    DEBUG("%s %s: count %ld", info.host, info.name, values.size());
+    value = r;
 }

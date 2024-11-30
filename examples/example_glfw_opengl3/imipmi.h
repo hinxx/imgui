@@ -50,12 +50,12 @@ struct SensorInfo {
 struct Sensor {
     Sensor(const char *host, const int record_type, const int sensor_type, const char *name, const int entity_id, const int entity_instance);
     void SetUnits(const char *units);
-    void AddReading(const double value, const uint64_t ts, const unsigned status);
+    void AddReading(const double val, const uint64_t ts, const unsigned status);
     void SetThresholds(const bool available, const double unr, const double ucr, const double unc, const double lnr, const double lcr, const double lnc);
     static unsigned MakeUID(const int type, const uint8_t *rec);
 
     SensorInfo info;
-    std::vector<SensorReading> values; 
+    SensorReading value;
 };
 
 struct Context;
@@ -66,7 +66,7 @@ struct Host {
     void Disconnect();
     void KeepAlive();
     bool CheckIPMIVersion();
-    bool ListSDR();
+    bool ReadSDR();
     void RequestWork(Job job);
     void Dump();
     static void *Run(void *instance);
