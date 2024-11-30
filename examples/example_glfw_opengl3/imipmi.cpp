@@ -7,83 +7,92 @@
 #define WARN(fmt, ...)  printf("WARN: %s:%d: " fmt "\n", __FUNCTION__, __LINE__, ##__VA_ARGS__)
 #define ERROR(fmt, ...) printf("ERROR: %s:%d: " fmt "\n", __FUNCTION__, __LINE__, ##__VA_ARGS__)
 
-ImIpmi *initContext() {
-    ImIpmi *ctx = new ImIpmi();
+
+///////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////     CONTEXT    /////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////
+
+Context *InitContext() {
+    Context *ctx = new Context();
     return ctx;
 }
 
-void destroyContext(ImIpmi *ctx) {
+void DestroyContext(Context *ctx) {
     delete ctx;
 }
 
-ImIpmi::~ImIpmi() {
+Context::~Context() {
     DEBUG(">>>");
-    for (auto it = std::begin(mHosts); it != std::end(mHosts); ++it) {
+    for (auto it = std::begin(hosts); it != std::end(hosts); ++it) {
         delete it->second;
         it->second = nullptr;
     }
-    mHosts.clear();
+    hosts.clear();
 }
 
-ImIpmiHost *ImIpmi::addHost(const char *hostname) {
+Host *Context::AddHost(const char *hostname) {
     DEBUG(">>>");
-    showHosts();
-    if (mHosts.count(hostname)) {
+    ShowHosts();
+    if (hosts.count(hostname)) {
         ERROR("host object for hostname %s already exist", hostname);
         return nullptr;
     }
-    ImIpmiHost *host = new ImIpmiHost(hostname);
-    mHosts[hostname] = host;
+    Host *host = new Host(hostname, this);
+    hosts[hostname] = host;
     return host;
 }
 
-void ImIpmi::removeHost(const char *hostname) {
+void Context::RemoveHost(const char *hostname) {
     DEBUG(">>>");
-    showHosts();
-    auto it = mHosts.find(hostname);
-    if (it != mHosts.end()) {
+    ShowHosts();
+    auto it = hosts.find(hostname);
+    if (it != hosts.end()) {
         DEBUG("removing %s from the context", hostname);
         delete it->second;
-        mHosts.erase(it);
+        hosts.erase(it);
     }
-    showHosts();
-    assert(mHosts.count(hostname) == 0);
+    ShowHosts();
+    assert(hosts.count(hostname) == 0);
 }
 
-void ImIpmi::showHosts() {
-    for (auto it = std::begin(mHosts); it != std::end(mHosts); ++it) {
+void Context::ShowHosts() {
+    for (auto it = std::begin(hosts); it != std::end(hosts); ++it) {
         DEBUG("host %s, %p", it->first.c_str(), it->second);
     }
 }
 
-ImIpmiHost::ImIpmiHost(const char *hostname)
-    : mHostname(hostname),
-    mIntf(nullptr),
-    mThread(nullptr) {
+///////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////      HOST     //////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////
+
+Host::Host(const char *host, Context *ctx)
+    : ctx(ctx),
+    ipmiIntf(nullptr) {
 
     DEBUG(">>>");
+    strncpy(hostname, host, 32);
+    pthread_mutex_init(&mutex, nullptr);
+    pthread_cond_init(&cond, nullptr);
 
-    // AMC4
-    mAllTargetAddresses.push_back(0x78);
-    // CU1
-    mAllTargetAddresses.push_back(0xa8);
-    connect();
+    Connect();
 }
 
-ImIpmiHost::~ImIpmiHost() {
+Host::~Host() {
     DEBUG(">>>");
-    disconnect();
+    Disconnect();
+    pthread_mutex_destroy(&mutex);
+    pthread_cond_destroy(&cond);
 }
 
-bool ImIpmiHost::connect() {
-    INFO("connecting to %s", mHostname.c_str());
+bool Host::Connect() {
+    INFO("connecting to %s", hostname);
     ipmi_intf *intf = ipmi_intf_load((char *)"lan");
     if (! intf) {
         ERROR("cannot load lan interface");
         return false;
     }
 
-    ipmi_intf_session_set_hostname(intf, const_cast<char *>(mHostname.c_str()));
+    ipmi_intf_session_set_hostname(intf, const_cast<char *>(hostname));
     // empty username and password
     ipmi_intf_session_set_username(intf, (char *)"");
     ipmi_intf_session_set_password(intf, (char *)"");
@@ -93,64 +102,144 @@ bool ImIpmiHost::connect() {
     ipmi_intf_session_set_lookupbit(intf, 0x10);
 
     if (! intf->open || (intf->open(intf) == -1)) {
-        ERROR("failed to connect to %s", mHostname.c_str());
+        ERROR("failed to connect to %s", hostname);
         ipmi_cleanup(intf);
         return false;
     }
 
     intf->my_addr = IPMI_BMC_SLAVE_ADDR;
     intf->target_addr = intf->my_addr;
-    mIntf = intf;
+    ipmiIntf = intf;
 
-    INFO("connected to %s", mHostname.c_str());
+    INFO("connected to %s", hostname);
 
-    if (! check()) {
-        disconnect();
+    if (! CheckIPMIVersion()) {
+        Disconnect();
         return false;
     }
 
-    mThread = new ImIpmiThread(this);
-    mThread->start();
+    terminate = false;
+    int ret = pthread_create(&threadId, nullptr, Run, this);
+    if (ret) {
+        ERROR("failed to start thread for %s", hostname);
+    }
 
     return true;
 }
 
-void ImIpmiHost::disconnect() {
+bool Host::TerminateThread() {
     DEBUG(">>>");
-	if (! mIntf) {
+    if (threadId) {
+        pthread_mutex_lock(&mutex);
+        terminate = true;
+        pthread_cond_signal(&cond);
+        pthread_mutex_unlock(&mutex);
+
+        return JoinThread();
+    }
+
+    return false;
+}
+
+bool Host::JoinThread() {
+    DEBUG(">>>");
+    return pthread_join(threadId, nullptr) == 0;
+}
+
+void *Host::Run(void *instance) {
+    DEBUG(">>>");
+    Host *us = static_cast<Host *>(instance);
+    return us->RunThread();
+}
+
+void *Host::RunThread() {
+    DEBUG(">>>");
+    while (true) {
+
+        std::list<Job> local_jobs;
+        pthread_mutex_lock(&mutex);
+        local_jobs.swap(jobs);
+        pthread_mutex_unlock(&mutex);
+
+        for (auto it = std::begin(local_jobs); it != std::end(local_jobs); ++it) {
+            Job &job = *it;
+            DEBUG("handling job type %d", job.mType);
+            if (job.mType == JobType_listSDR) {
+                ListSDR();
+            }
+        }
+        local_jobs.clear();
+
+        if (terminate) {
+            pthread_exit(nullptr);
+        }
+
+        pthread_mutex_lock(&mutex);
+        DEBUG("going for a wait");
+        int rc = ETIMEDOUT;
+        while (rc == ETIMEDOUT) {
+            KeepAlive();
+
+/*
+            for (auto it = std::begin(mHost->mAllTargetAddresses); it != std::end(mHost->mAllTargetAddresses); ++it) {
+                mHost->update_target_sdr(*it);
+            }
+*/
+
+            struct timespec ts;
+            clock_gettime(CLOCK_REALTIME, &ts);
+            ts.tv_sec += 5;
+            rc = pthread_cond_timedwait(&cond, &mutex, &ts);
+            DEBUG("woken rc %d", rc);
+        }
+        DEBUG("woken up");
+        pthread_mutex_unlock(&mutex);
+    }
+    
+    return nullptr;
+}
+
+void Host::RequestWork(Job job) {
+    DEBUG(">>>");
+    pthread_mutex_lock(&mutex);
+    jobs.push_back(job);
+    pthread_cond_signal(&cond);
+    pthread_mutex_unlock(&mutex);
+}
+
+void Host::Disconnect() {
+    DEBUG(">>>");
+	if (! ipmiIntf) {
         ERROR("ipmi interface not connected!");
         return;
     }
 
-    if (mThread) {
-        mThread->terminate();
-        mThread = nullptr;
-    }
+    TerminateThread();
 
-    ipmi_cleanup(mIntf);
-	if (mIntf->opened && mIntf->close) {
-        mIntf->close(mIntf);
-        INFO("disconnected from host %s", mHostname.c_str());
+    ipmi_cleanup(ipmiIntf);
+	if (ipmiIntf->opened && ipmiIntf->close) {
+        ipmiIntf->close(ipmiIntf);
+        INFO("disconnected from host %s", hostname);
     }
-    mIntf = nullptr;
+    ipmiIntf = nullptr;
 }
 
-void ImIpmiHost::keepalive() {
+void Host::KeepAlive() {
     DEBUG(">>>");
-    if (! mIntf) {
+    if (! ipmiIntf) {
         ERROR("ipmi interface not connected!");
         return;
     }
-    mIntf->keepalive(mIntf);
+    ipmiIntf->keepalive(ipmiIntf);
 }
 
-bool ImIpmiHost::check() {
+bool Host::CheckIPMIVersion() {
     // from ipmitool, ipmi_main.c
     ipmi_rq req;
     bool version_accepted = false;
 
     DEBUG(">>>");
-    if (! mIntf) {
+    if (! ipmiIntf) {
         ERROR("ipmi interface not connected!");
         return false;
     }
@@ -163,7 +252,7 @@ bool ImIpmiHost::check() {
     req.msg.data_len = 1;
     msg_data = 0;
 
-    const ipmi_rs *const rsp = mIntf->sendrecv(mIntf, &req);
+    const ipmi_rs *const rsp = ipmiIntf->sendrecv(ipmiIntf, &req);
     if (rsp && !rsp->ccode) {
         if (rsp->data[0] == 0) {
             if (((rsp->data[1] & 0x0F) == PICMG_ATCA_MAJOR_VERSION ||
@@ -179,98 +268,139 @@ bool ImIpmiHost::check() {
     return version_accepted;
 }
 
-bool ImIpmiHost::bridge(uint8_t target_addr) {
-    uint8_t target_channel = 7;
-    uint8_t transit_addr = 0x82;
-    uint8_t transit_channel = 0;
-
-    DEBUG(">>>");
-    if (! mIntf) {
-        ERROR("ipmi interface not connected!");
-        return false;
-    }
-
-    // // if bridging addresses are specified, handle them
-    // if (transit_addr > 0 || target_addr > 0) {
-    //     if ((transit_addr != 0 || transit_channel != 0) && target_addr == 0) {
-    //         ERROR("transit address/channel 0x%x/0x%x ignored, target address must be specified!",
-    //                 transit_addr, transit_channel);
-    //         return false;
-    //     }
-    if (target_addr > 0) {
-        mIntf->target_addr = target_addr;
-        mIntf->target_channel = target_channel;
-
-        mIntf->transit_addr = transit_addr;
-        mIntf->transit_channel = transit_channel;
-
-        /* must be admin level to do this over lan */
-        // ipmi_intf_session_set_privlvl(intf, IPMI_SESSION_PRIV_ADMIN);
-        /* Get the ipmb address of the targeted entity */
-        // intf_->target_ipmb_addr = ipmi_acquire_ipmb_address(intf_);
-        mIntf->target_ipmb_addr = ipmi_picmg_ipmb_address(mIntf);
-        DEBUG("specified addressing: target 0x%x:0x%x transit 0x%x:0x%x",
-                mIntf->target_addr, mIntf->target_channel, mIntf->transit_addr, mIntf->transit_channel);
-        if (mIntf->target_ipmb_addr) {
-            INFO("discovered target IPMB-0 address 0x%x", mIntf->target_ipmb_addr);
-        }
-    } else {
-        mIntf->target_addr = mIntf->my_addr;
-        mIntf->target_channel = 0;
-
-        mIntf->transit_addr = 0;
-        mIntf->transit_channel = 0;
-        mIntf->target_ipmb_addr = 0;
-    }
-
-    DEBUG("interface address: my_addr 0x%x transit 0x%x:0x%x target 0x%x:0x%x ipmb_target 0x%x",
-            mIntf->my_addr, mIntf->transit_addr, mIntf->transit_channel, mIntf->target_addr,
-            mIntf->target_channel, mIntf->target_ipmb_addr);
-
-    return true;
-}
-
-bool ImIpmiHost::list_sdr() {
+bool Host::ListSDR() {
     struct sdr_get_rs *header;
     struct ipmi_sdr_iterator *itr;
 
     DEBUG(">>>");
-    if (! mIntf) {
+    if (! ipmiIntf) {
         ERROR("ipmi interface not connected!");
         return false;
     }
 
     DEBUG("querying SDR for sensor list");
 
-    itr = ipmi_sdr_start(mIntf, 0);
+    itr = ipmi_sdr_start(ipmiIntf, 0);
     if (! itr) {
         ERROR("unable to open SDR for reading");
         return false;
     }
 
     size_t count = 0;
-    while ((header = ipmi_sdr_get_next_header(mIntf, itr))) {
+    while ((header = ipmi_sdr_get_next_header(ipmiIntf, itr))) {
         uint8_t *rec;
 
-        rec = ipmi_sdr_get_record(mIntf, header, itr);
-        if (!rec) {
+        rec = ipmi_sdr_get_record(ipmiIntf, header, itr);
+        if (! rec) {
             ERROR("rec == NULL");
             continue;
         }
 
-        switch (header->type) {
-        case SDR_RECORD_TYPE_FULL_SENSOR:
-        case SDR_RECORD_TYPE_COMPACT_SENSOR:
-            count++;
-            ipmi_sensor_print_fc(mIntf, (struct sdr_record_common_sensor *)rec, header->type);
-            break;
+        unsigned uid = Sensor::MakeUID(header->type, rec);
+        Sensor *s = GetSensor(uid);
+        DEBUG("header type %d: sensor %p", header->type, s);
+
+        if (header->type == SDR_RECORD_TYPE_FULL_SENSOR || header->type == SDR_RECORD_TYPE_COMPACT_SENSOR) {
+
+            struct sdr_record_common_sensor *sen = (struct sdr_record_common_sensor *)rec;
+            // ignore discrete sensors
+            if (! IS_THRESHOLD_SENSOR(sen)) {
+                DEBUG("header type %d not threshold sensor", header->type);
+                continue;
+            }
+
+            DEBUG("sensor: %d, entity %x.%x", sen->keys.sensor_num, sen->entity.id, sen->entity.instance);
+            struct sensor_reading *sr = ipmi_sdr_read_sensor_value(ipmiIntf, sen, header->type, 3);
+            if (! sr) {
+                ERROR("failed to read sensor value");
+                continue;
+            }
+
+            if (sr->full) {
+                struct sdr_record_full_sensor *full = sr->full;
+                DEBUG(" full id string %s", full->id_string);
+
+                if (! s) {
+                    // new sensor found, obtain thresholds and units
+                    int thresh_available = 1;
+                    // get sensor thresholds
+                    struct ipmi_rs *rsp = ipmi_sdr_get_sensor_thresholds(ipmiIntf,
+                            sen->keys.sensor_num, sen->keys.owner_id,
+                            sen->keys.lun, sen->keys.channel);
+
+                    if (! rsp || rsp->ccode || ! rsp->data_len) {
+                        thresh_available = 0;
+                    }
+
+                    double unr = 0.0;
+                    double ucr = 0.0;
+                    double unc = 0.0;
+                    double lnc = 0.0;
+                    double lcr = 0.0;
+                    double lnr = 0.0;
+                    if (thresh_available) {
+                        if (rsp->data[0] & LOWER_NON_RECOV_SPECIFIED) {
+                            lnr = sdr_convert_sensor_reading(full, rsp->data[3]);
+                        }
+                        if (rsp->data[0] & LOWER_CRIT_SPECIFIED) {
+                            lcr = sdr_convert_sensor_reading(full, rsp->data[2]);
+                        }
+                        if (rsp->data[0] & LOWER_NON_CRIT_SPECIFIED) {
+                            lnc = sdr_convert_sensor_reading(full, rsp->data[1]);
+                        }
+                        if (rsp->data[0] & UPPER_NON_CRIT_SPECIFIED) {
+                            unc = sdr_convert_sensor_reading(full, rsp->data[4]);
+                        }
+                        if (rsp->data[0] & UPPER_CRIT_SPECIFIED) {
+                            ucr = sdr_convert_sensor_reading(full, rsp->data[5]);
+                        }
+                        if (rsp->data[0] & UPPER_NON_RECOV_SPECIFIED) {
+                            unr = sdr_convert_sensor_reading(full, rsp->data[6]);
+                        }
+                    }
+
+                    s = CreateSensor(header->type, sen->sensor.type, (const char *)full->id_string, sen->entity.id, sen->entity.instance);
+                    sensors[uid] = s;
+                    s->SetUnits(sr->s_a_units);
+                    s->SetThresholds(thresh_available, unr, ucr, unc, lnc, lcr, lnr);
+                }
+            } else if (sr->compact) {
+                struct sdr_record_compact_sensor *compact = sr->compact;
+                DEBUG(" compact id string %s", compact->id_string);
+                if (! s) {
+                    s = CreateSensor(header->type, sen->sensor.type, (const char *)compact->id_string, sen->entity.id, sen->entity.instance);
+                    sensors[uid] = s;
+                    s->SetUnits(sr->s_a_units);
+                    s->SetThresholds(0, 0, 0, 0, 0, 0, 0);
+                }
+            }
+
+            assert(s != nullptr);
+
+            struct timespec ts;
+            clock_gettime(CLOCK_REALTIME, &ts);
+            uint64_t timestamp = ts.tv_sec * 1000000000 + ts.tv_nsec;
+            // TODO: decode threshold status!?
+            // const char *thresh_status = ipmi_sdr_get_thresh_status(sr, "ns");
+            s->AddReading(sr->s_a_val, timestamp, sr->s_data2);
+
+        } else if (header->type == SDR_RECORD_TYPE_FRU_DEVICE_LOCATOR) {
+            struct sdr_record_fru_locator *fru = (struct sdr_record_fru_locator *)rec;
+            DEBUG("fruloc sensor:     Entity %x.%x", fru->entity.id, fru->entity.instance);
+            DEBUG(" id string %s", fru->id_string);
+            // GetSensor(header->type, 0, (const char *)fru->id_string, fru->entity.id, fru->entity.instance);
+            // Sensor *s = GetSensor(uid);
+            // DEBUG("sensor %p", s);
+
+        } else {
+            struct sdr_record_common_sensor *sen = (struct sdr_record_common_sensor *)rec;
+            ERROR("?????? sensor: %d, Entity %x.%x", sen->keys.sensor_num, sen->entity.id, sen->entity.instance);
         }
+
+        count++;
+
         free(rec);
         rec = NULL;
-
-        /* fix for CR6604909: */
-        /* mask failure of individual reads in sensor list command */
-        /* rc = (r == 0) ? rc : r; */
     }
     ipmi_sdr_end(itr);
 
@@ -278,248 +408,96 @@ bool ImIpmiHost::list_sdr() {
     return true;
 }
 
-bool ImIpmiHost::update_target_sdr(uint8_t target_addr) {
-    struct sdr_get_rs *header;
-    struct ipmi_sdr_iterator *itr;
-
-    DEBUG(">>>");
-    if (! mIntf) {
-        ERROR("ipmi interface not connected!");
-        return false;
+unsigned Sensor::MakeUID(const int type, const uint8_t *rec) {
+    unsigned uid = 0;
+    if (type == SDR_RECORD_TYPE_FULL_SENSOR || type == SDR_RECORD_TYPE_COMPACT_SENSOR) {
+        struct sdr_record_common_sensor *common = (struct sdr_record_common_sensor *)rec;
+        uid = common->keys.sensor_num << 24 \
+            | common->keys.lun << 16 \
+            | common->entity.id << 8 \
+            | common->entity.instance;
+    } else if (type == SDR_RECORD_TYPE_FRU_DEVICE_LOCATOR) {
+        struct sdr_record_fru_locator *fru = (struct sdr_record_fru_locator *)rec;
+        uid = 0 \
+            | fru->lun << 16 \
+            | fru->entity.id << 8 \
+            | fru->entity.instance;
     }
-
-    DEBUG("querying SDR for sensor list for target 0x%x", target_addr);
-
-    if (! bridge(target_addr)) {
-        return false;
-    }
-
-    if (mTargets.find(target_addr) == mTargets.end()) {
-        ImIpmiTarget target = {
-            .mAddress = target_addr
-        };
-        DEBUG("adding target 0x%x", target_addr);
-        mTargets[target_addr] = target;
-    } else {
-        DEBUG("target 0x%x exists", target_addr);
-    }
-    // ImIpmiTarget &target = mTargets[target_addr];
-    std::map<std::string,ImIpmiSensor> &sensors  = mTargets[target_addr].mSensors;
-
-    itr = ipmi_sdr_start(mIntf, 0);
-    if (! itr) {
-        ERROR("unable to open SDR for reading");
-        bridge(0);
-        return false;
-    }
-
-    size_t count = 0;
-    while ((header = ipmi_sdr_get_next_header(mIntf, itr))) {
-        uint8_t *rec;
-
-        rec = ipmi_sdr_get_record(mIntf, header, itr);
-        if (!rec) {
-            ERROR("rec == NULL");
-            continue;
-        }
-
-        switch (header->type) {
-        case SDR_RECORD_TYPE_FULL_SENSOR:
-        case SDR_RECORD_TYPE_COMPACT_SENSOR:
-            count++;
-            // ipmi_sensor_print_fc(mIntf, (struct sdr_record_common_sensor *)rec, header->type);
-            {
-                struct sdr_record_common_sensor *sensor = (struct sdr_record_common_sensor *)rec;
-                if (IS_THRESHOLD_SENSOR(sensor)) {
-            		// return ipmi_sensor_print_fc_threshold(intf, sensor, sdr_record_type);
-                    int thresh_available = 1;
-                    struct ipmi_rs *rsp;
-                    struct sensor_reading *sr;
-
-                    sr = ipmi_sdr_read_sensor_value(mIntf, sensor, header->type, 3);
-                    if (! sr) {
-                        ERROR("failed to read sensor value");
-                        continue;
-                    }
-
-                    const char *thresh_status = ipmi_sdr_get_thresh_status(sr, "ns");
-                    // get sensor thresholds
-                    rsp = ipmi_sdr_get_sensor_thresholds(mIntf,
-                            sensor->keys.sensor_num, sensor->keys.owner_id,
-                            sensor->keys.lun, sensor->keys.channel);
-
-                    if (! rsp || rsp->ccode || ! rsp->data_len) {
-                        thresh_available = 0;
-                    }
-        			// dump_sensor_fc_thredshold(thresh_available, thresh_status, rsp, sr);
-                    
-                    if (sensors.find(sr->s_id) == sensors.end()) {
-                        ImIpmiSensor s;
-                        s.mName = std::string(sr->s_id);
-                        s.mUnits = sr->s_a_units;
-                        s.mValues.push_back(sr->s_a_val);
-                        struct sdr_record_full_sensor *full = sr->full;
-                        memset(s.mLowerThresholds, 0, sizeof(s.mLowerThresholds));
-                        memset(s.mUpperThresholds, 0, sizeof(s.mUpperThresholds));
-                        if (rsp->data[0] & LOWER_NON_RECOV_SPECIFIED) {
-                            s.mLowerThresholds[0] = sdr_convert_sensor_reading(full, rsp->data[3]);
-                        }
-                        if (rsp->data[0] & LOWER_CRIT_SPECIFIED) {
-                            s.mLowerThresholds[1] = sdr_convert_sensor_reading(full, rsp->data[2]);
-                        }
-                        if (rsp->data[0] & LOWER_NON_CRIT_SPECIFIED) {
-                            s.mLowerThresholds[2] = sdr_convert_sensor_reading(full, rsp->data[1]);
-                        }
-                        if (rsp->data[0] & UPPER_NON_CRIT_SPECIFIED) {
-                            s.mUpperThresholds[0] = sdr_convert_sensor_reading(full, rsp->data[4]);
-                        }
-                        if (rsp->data[0] & UPPER_CRIT_SPECIFIED) {
-                            s.mUpperThresholds[1] = sdr_convert_sensor_reading(full, rsp->data[5]);
-                        }
-                        if (rsp->data[0] & UPPER_NON_RECOV_SPECIFIED) {
-                            s.mUpperThresholds[2] = sdr_convert_sensor_reading(full, rsp->data[6]);
-                        }
-                	    DEBUG("adding sensor '%s'", s.mName.c_str());
-                        sensors[sr->s_id] = s;
-                    } else {
-                	    DEBUG("sensor '%s' exists", sr->s_id);
-                        ImIpmiSensor &s = sensors[sr->s_id];
-                        s.mValues.push_back(sr->s_a_val);
-                    }
-                }
-            }
-            break;
-        }
-        free(rec);
-        rec = NULL;
-
-        /* fix for CR6604909: */
-        /* mask failure of individual reads in sensor list command */
-        /* rc = (r == 0) ? rc : r; */
-    }
-    ipmi_sdr_end(itr);
-
-    DEBUG("SDR for target 0x%x has %ld sensors", target_addr, count);
-
-    bridge(0);
-
-    return true;
+    return uid;
 }
 
-void ImIpmiHost::request_work(ImIpmiJob job) {
-    mThread->request_work(job);
+Sensor *Host::CreateSensor(const int record_type, const int sensor_type, const char *name, const int entity_id, const int entity_instance) {
+    Sensor *s = new Sensor(hostname, record_type, sensor_type, name, entity_id, entity_instance);
+    DEBUG("created new sensor %s, %p", name, s);
+    return s;
 }
 
-void ImIpmiHost::dump(uint8_t target_addr) {
-    DEBUG(">>>");
-    DEBUG("nr targets %ld", mTargets.size());
+Sensor *Host::GetSensor(const unsigned uid) {
+    auto found = sensors.find(uid);
+    if (found == sensors.end()) {
+        DEBUG("NOT found sensor UID %x", uid);
+        return nullptr;
+    }
+    DEBUG("found sensor UID %x, name %s, %p", uid, found->second->info.name, found->second);
+    return found->second;
+}
 
-    for (auto it = std::begin(mTargets); it != mTargets.end(); ++it) {
-        ImIpmiTarget &t = it->second;
-        DEBUG("**** TARGET 0x%x (nr sensors %ld) *****", t.mAddress, t.mSensors.size());
-        for (auto it2 = std::begin(t.mSensors); it2 != t.mSensors.end(); ++it2) {
-            ImIpmiSensor &s = it2->second;
-            DEBUG("  SENSOR (%ld readings) %-20s %4.2f %s (%4.2f %4.2f %4.2f | %4.2f %4.2f %4.2f)",
-                s.mValues.size(), s.mName.c_str(), s.mValues.back(), s.mUnits.c_str(),
-                s.mLowerThresholds[0], s.mLowerThresholds[1], s.mLowerThresholds[2],
-                s.mUpperThresholds[0], s.mUpperThresholds[1], s.mUpperThresholds[2]
-                );
-        }
+void Host::Dump() {
+    DEBUG(">>>");
+    DEBUG("nr sensors %ld", sensors.size());
+
+    for (auto it = sensors.begin(); it != sensors.end(); ++it) {
+        Sensor *s = it->second;
+        DEBUG("SENSOR: %s %x.%x (# %ld) %f %s @ %ld %x",
+            s->info.name, s->info.entityId, s->info.entityInstance, s->values.size(), s->values.back().value, s->info.units, s->values.back().ts, s->values.back().status);
     }
 }
 
-ImIpmiThread::ImIpmiThread(ImIpmiHost *host)
-    : mHost(host), mTerminate(false) {
 
-    pthread_mutex_init(&mMutex, nullptr);
-    pthread_cond_init(&mCond, nullptr);
+///////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////    SENSOR     //////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////
+
+
+Sensor::Sensor(const char *host, const int record_type, const int sensor_type, const char *name, const int entity_id, const int entity_instance) {
+    // strncpy(info.host, host, 20);
+    info.host = host;
+    info.recordType = record_type;
+    info.sensorType = sensor_type;
+    info.entityId = entity_id;
+    info.entityInstance = entity_instance;
+    strncpy(info.name, name, 20);
+    DEBUG("%s %s: new sensor entity %x.%x", info.host, info.name, info.entityId, info.entityInstance);
 }
 
-ImIpmiThread::~ImIpmiThread() {
-    pthread_mutex_destroy(&mMutex);
-    pthread_cond_destroy(&mCond);
+void Sensor::SetUnits(const char *units) {
+    DEBUG("%s: units %s", info.name, units);
+    strncpy(info.units, units, 20);
 }
 
-void ImIpmiThread::start() {
-    DEBUG(">>>");
-    int ret = pthread_create(&mThreadId, nullptr, run, this);
-    if (ret) {
-        ERROR("failed to start thread for %s", mHost->mHostname.c_str());
-    }
+// unr = upper non-recoverable
+// ucr = upper critical
+// unc = upper non-critical
+// lnc = lower non-critical
+// lcr = lower critical
+// lnr = lower non-recoverable
+void Sensor::SetThresholds(const bool available, const double unr, const double ucr, const double unc, const double lnc, const double lcr, const double lnr) {
+    DEBUG("%s %s: available %d unr %4.2f ucr %4.2f unc %4.2f lnc %4.2f lcr %4.2f lnr %4.2f", info.host, info.name, available, unr, ucr, unc, lnc, lcr, lnr);
+    info.threshAvailable = available;
+    info.unr = unr;
+    info.ucr = ucr;
+    info.unc = unc;
+    info.lnc = lnc;
+    info.lcr = lcr;
+    info.lnc = lnc;
 }
 
-bool ImIpmiThread::terminate() {
-    DEBUG(">>>");
-    pthread_mutex_lock(&mMutex);
-    mTerminate = true;
-    pthread_cond_signal(&mCond);
-    pthread_mutex_unlock(&mMutex);
-
-    return join();
-}
-
-bool ImIpmiThread::join() {
-    DEBUG(">>>");
-    return pthread_join(mThreadId, nullptr) == 0;
-}
-
-void *ImIpmiThread::run(void *instance) {
-    DEBUG(">>>");
-    ImIpmiThread *us = static_cast<ImIpmiThread *>(instance);
-    return us->do_run();
-}
-
-void ImIpmiThread::request_work(ImIpmiJob job) {
-    DEBUG(">>>");
-    pthread_mutex_lock(&mMutex);
-    mJobs.push_back(job);
-    pthread_cond_signal(&mCond);
-    pthread_mutex_unlock(&mMutex);
-}
-
-void *ImIpmiThread::do_run() {
-    DEBUG(">>>");
-    while (true) {
-        std::list<ImIpmiJob> jobs;
-        pthread_mutex_lock(&mMutex);
-        mJobs.swap(jobs);
-        pthread_mutex_unlock(&mMutex);
-
-        for (auto it = std::begin(jobs); it != std::end(jobs); ++it) {
-            ImIpmiJob &job = *it;
-            DEBUG("handling job type %d, target %d", job.mType, job.mTarget);
-            if (job.mType == ImIpmiJobType_showAllSdr) {
-                mHost->bridge(job.mTarget);
-                mHost->list_sdr();
-            } else if (job.mType == ImIpmiJobType_updateTargetSensors) {
-                mHost->update_target_sdr(job.mTarget);
-            }
-        }
-        jobs.clear();
-
-        if (mTerminate) {
-            pthread_exit(nullptr);
-        }
-
-        pthread_mutex_lock(&mMutex);
-        DEBUG("going for a wait");
-        int rc = ETIMEDOUT;
-        while (rc == ETIMEDOUT) {
-            mHost->keepalive();
-
-            for (auto it = std::begin(mHost->mAllTargetAddresses); it != std::end(mHost->mAllTargetAddresses); ++it) {
-                mHost->update_target_sdr(*it);
-            }
-
-            struct timespec ts;
-            clock_gettime(CLOCK_REALTIME, &ts);
-            ts.tv_sec += 5;
-            rc = pthread_cond_timedwait(&mCond, &mMutex, &ts);
-            DEBUG("woken rc %d", rc);
-        }
-        DEBUG("woken up");
-        pthread_mutex_unlock(&mMutex);
-    }
-    
-    return nullptr;
+void Sensor::AddReading(const double value, const uint64_t ts, const unsigned status) {
+    SensorReading r = {
+        .value = value,
+        .ts = ts,
+        .status = status
+    };
+    values.push_back(r);
+    DEBUG("%s %s: count %ld", info.host, info.name, values.size());
 }

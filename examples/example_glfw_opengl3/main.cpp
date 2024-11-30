@@ -259,6 +259,76 @@ we can rely on the 'sensor->entity.id' value to determine the
 type of the FRU and then 'sensor->entity.instance - 0x60' to get
 its instance number; ends up being index x of AMCx, RTMx, CUx, PMx, ..
 
+--------------------------------------------------------------------------------------
+
+ipmitool> sdr entity help
+
+Entity IDs:
+
+     0  Unspecified                            1  Other                           
+     2  Unknown                                3  Processor                       
+     4  Disk or Disk Bay                       5  Peripheral Bay                  
+     6  System Management Module               7  System Board                    
+     8  Memory Module                          9  Processor Module                
+    10  Power Supply                          11  Add-in Card                     
+    12  Front Panel Board                     13  Back Panel Board                
+    14  Power System Board                    15  Drive Backplane                 
+    16  System Internal Expansion Board       17  Other System Board              
+    18  Processor Board                       19  Power Unit                      
+    20  Power Module                          21  Power Management                
+    22  Chassis Back Panel Board              23  System Chassis                  
+    24  Sub-Chassis                           25  Other Chassis Board             
+    26  Disk Drive Bay                        27  Peripheral Bay                  
+    28  Device Bay                            29  Fan Device                      
+    30  Cooling Unit                          31  Cable/Interconnect              
+    32  Memory Device                         33  System Management Software      
+    34  BIOS                                  35  Operating System                
+    36  System Bus                            37  Group                           
+    38  Remote Management Device              39  External Environment            
+    40  Battery                               41  Processing Blade                
+    42  Connectivity Switch                   43  Processor/Memory Module         
+    44  I/O Module                            45  Processor/IO Module             
+    46  Management Controller Firmware        47  IPMI Channel                    
+    48  PCI Bus                               49  PCI Express Bus                 
+    50  SCSI Bus (parallel)                   51  SATA/SAS Bus                    
+    52  Processor/Front-Side Bus              53  Real Time Clock(RTC)            
+    54  Reserved                              55  Air Inlet                       
+    56  Reserved                              57  Reserved                        
+    58  Reserved                              59  Reserved                        
+    60  Reserved                              61  Reserved                        
+    62  Reserved                              63  Reserved                        
+    64  Air Inlet                             65  Processor                       
+    66  Baseboard/Main System Board          160  PICMG Front Board               
+   192  PICMG Rear Transition Module         193  PICMG AdvancedMC Module         
+   194  MicroTCA Carrier Hub (MCH)           208  OEM Module                      
+   240  PICMG Shelf Management Controller     241  PICMG Filtration Unit           
+   242  PICMG Shelf FRU Information          243  PICMG Alarm Panel               
+
+ipmitool> sdr type help
+Sensor Types:
+	Temperature               (0x01)   Voltage                   (0x02)
+	Current                   (0x03)   Fan                       (0x04)
+	Physical Security         (0x05)   Platform Security         (0x06)
+	Processor                 (0x07)   Power Supply              (0x08)
+	Power Unit                (0x09)   Cooling Device            (0x0a)
+	Other                     (0x0b)   Memory                    (0x0c)
+	Drive Slot / Bay          (0x0d)   POST Memory Resize        (0x0e)
+	System Firmwares          (0x0f)   Event Logging Disabled    (0x10)
+	Watchdog1                 (0x11)   System Event              (0x12)
+	Critical Interrupt        (0x13)   Button                    (0x14)
+	Module / Board            (0x15)   Microcontroller           (0x16)
+	Add-in Card               (0x17)   Chassis                   (0x18)
+	Chip Set                  (0x19)   Other FRU                 (0x1a)
+	Cable / Interconnect      (0x1b)   Terminator                (0x1c)
+	System Boot Initiated     (0x1d)   Boot Error                (0x1e)
+	OS Boot                   (0x1f)   OS Critical Stop          (0x20)
+	Slot / Connector          (0x21)   System ACPI Power State   (0x22)
+	Watchdog2                 (0x23)   Platform Alert            (0x24)
+	Entity Presence           (0x25)   Monitor ASIC              (0x26)
+	LAN                       (0x27)   Management Subsys Health  (0x28)
+	Battery                   (0x29)   Session Audit             (0x2a)
+	Version Change            (0x2b)   FRU State                 (0x2c)
+
 */
 
 // Main code
@@ -338,9 +408,9 @@ int main(int, char**)
     bool show_another_window = false;
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
-    ImIpmi *ctx = initContext();
+    Context *ctx = InitContext();
 
-    // float keepalive = 0.0;
+    // float KeepAlive = 0.0;
 
     // Main loop
 #ifdef __EMSCRIPTEN__
@@ -409,19 +479,21 @@ int main(int, char**)
         {
             ImGui::Begin("Ipmitool debug");
 
+            ImGui::InputInt("verbose", &verbose);
+
             static char hostname[128] = "172.30.150.51";
-            static ImIpmiHost *host = nullptr;
+            static Host *host = nullptr;
             ImGui::InputText("hostname", hostname, IM_ARRAYSIZE(hostname));
 
             if (ImGui::Button("connect")) {
                 if (strlen(hostname)) {
-                    host = ctx->addHost(hostname);
+                    host = ctx->AddHost(hostname);
                     ImGui::Text("connected");
                 }
             }
             if (ImGui::Button("disconnect")) {
                 if (strlen(hostname)) {
-                    ctx->removeHost(hostname);
+                    ctx->RemoveHost(hostname);
                     host = nullptr;
                     ImGui::Text("disconnected");
                 }
@@ -429,53 +501,18 @@ int main(int, char**)
 
             if (ImGui::Button("sdr list")) {
                 if (host) {
-                    // host->bridge(0);
-                    // host->list_sdr();
-                    ImIpmiJob job = {
-                        .mType = ImIpmiJobType_showAllSdr,
-                        .mTarget = 0
+                    Job job = {
+                        .mType = JobType_listSDR,
                     };
-                    host->request_work(job);
-                }
-            }
-
-            static int target = 0;
-            ImGui::InputInt("target [hex]", &target, 1, 16, ImGuiInputTextFlags_CharsHexadecimal);
-            if (ImGui::Button("sdr list target")) {
-                if (host) {
-                    // host->bridge(target);
-                    // host->list_sdr();
-                    ImIpmiJob job = {
-                        .mType = ImIpmiJobType_showAllSdr,
-                        .mTarget = target
-                    };
-                    host->request_work(job);
-                }
-            }
-
-            if (ImGui::Button("sdr init target")) {
-                if (host) {
-                    ImIpmiJob job = {
-                        .mType = ImIpmiJobType_initTargetSensors,
-                        .mTarget = target
-                    };
-                    host->request_work(job);
+                    host->RequestWork(job);
                 }
             }
 
             if (ImGui::Button("dump")) {
                 if (host) {
-                    host->dump(0);
+                    host->Dump();
                 }
             }
-
-            // keepalive++;
-            // if (keepalive >= io.Framerate) {
-            //     keepalive = 0.0;
-            //     if (host) {
-            //         host->keepalive();
-            //     }
-            // }
 
             ImGui::End();
         }
@@ -496,7 +533,7 @@ int main(int, char**)
 #endif
 
     // ipmitool
-    destroyContext(ctx);
+    DestroyContext(ctx);
     // ipmitool
 
     // Cleanup

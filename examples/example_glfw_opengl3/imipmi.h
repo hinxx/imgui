@@ -17,86 +17,84 @@ extern "C" {
 #include <pthread.h>
 
 typedef enum {
-    ImIpmiJobType_showAllSdr = 1,
-    ImIpmiJobType_updateTargetSensors = 2
-} eImIpmiJobType;
+    JobType_listSDR = 1,
+} eJobType;
 
-struct ImIpmiJob {
-    eImIpmiJobType mType;
-    int mTarget;
+struct Job {
+    eJobType mType;
 };
 
-struct ImIpmiSensor {
-    std::string mName;
-    std::string mUnits;
-    // 0 LOWER_NON_RECOV
-    // 1 LOWER_CRIT
-    // 2 LOWER_NON_CRIT
-    double mLowerThresholds[3];
-    // 0 UPPER_NON_RECOV
-    // 1 UPPER_CRIT
-    // 2 UPPER_NON_CRIT
-    double mUpperThresholds[3];
-    std::vector<double> mValues;
+struct SensorReading {
+    double value;
+    uint64_t ts;
+    unsigned status;
 };
 
-struct ImIpmiTarget {
-    int mAddress;
-    std::map<std::string,ImIpmiSensor> mSensors;
+struct SensorInfo {
+    const char *host;
+    int recordType;
+    int sensorType;
+    int entityId;
+    int entityInstance;
+    char name[20];
+    char units[20];
+    double unr;     // unr = upper non-recoverable
+    double ucr;     // ucr = upper critical
+    double unc;     // unc = upper non-critical
+    double lnc;     // lnc = lower non-critical
+    double lcr;     // lcr = lower critical
+    double lnr;     // lnr = lower non-recoverable
+    bool threshAvailable;
 };
 
-struct ImIpmiThread;
-struct ImIpmiHost {
-    ImIpmiHost(const char *hostname);
-    ~ImIpmiHost();
-    bool connect();
-    void disconnect();
-    void keepalive();
-    bool check();
-    bool bridge(uint8_t target_addr);
-    bool list_sdr();
-    bool update_target_sdr(uint8_t target_addr);
-    void request_work(ImIpmiJob job);
-    void dump(uint8_t target_addr);
+struct Sensor {
+    Sensor(const char *host, const int record_type, const int sensor_type, const char *name, const int entity_id, const int entity_instance);
+    void SetUnits(const char *units);
+    void AddReading(const double value, const uint64_t ts, const unsigned status);
+    void SetThresholds(const bool available, const double unr, const double ucr, const double unc, const double lnr, const double lcr, const double lnc);
+    static unsigned MakeUID(const int type, const uint8_t *rec);
 
-    std::string mHostname;
-    ipmi_intf *mIntf;
-    struct ImIpmiThread *mThread;
-    std::map<int,ImIpmiTarget> mTargets;
-    std::vector<int> mAllTargetAddresses;
+    SensorInfo info;
+    std::vector<SensorReading> values; 
 };
 
-struct ImIpmiThread {
-    ImIpmiThread(ImIpmiHost *host);
-    ~ImIpmiThread();
-    static void *run(void *instance);
-    void *do_run();
-    void start();
-    bool join();
-    bool terminate();
-    void request_work(ImIpmiJob job);
+struct Context;
+struct Host {
+    Host(const char *host, Context *ctx);
+    ~Host();
+    bool Connect();
+    void Disconnect();
+    void KeepAlive();
+    bool CheckIPMIVersion();
+    bool ListSDR();
+    void RequestWork(Job job);
+    void Dump();
+    static void *Run(void *instance);
+    void *RunThread();
+    bool JoinThread();
+    bool TerminateThread();
+    Sensor *CreateSensor(const int record_type, const int sensor_type, const char *name, const int entity_id, const int entity_instance);
+    Sensor *GetSensor(const unsigned uid);
 
-    ImIpmiHost *mHost;
-    pthread_t mThreadId;
-    pthread_mutex_t mMutex;
-    pthread_cond_t mCond;
-    bool mTerminate;
-    std::list<ImIpmiJob> mJobs;
+    char hostname[32];
+    Context *ctx;
+    ipmi_intf *ipmiIntf;
+    pthread_t threadId;
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+    bool terminate;
+    std::list<Job> jobs;
+    std::map<unsigned,Sensor *> sensors;
 };
 
-
-struct ImIpmi {
-    ~ImIpmi();
-    ImIpmiHost *addHost(const char *hostname);
-    void removeHost(const char *hostname);
-    void showHosts();
-
-    // std::vector<ImIpmiHost *> mHosts;
-    std::map<std::string,ImIpmiHost *> mHosts;
+struct Context {
+    ~Context();
+    Host *AddHost(const char *hostname);
+    void RemoveHost(const char *hostname);
+    void ShowHosts();
+    
+    std::map<std::string,Host *> hosts;
 };
 
-ImIpmi *initContext();
-void destroyContext(ImIpmi *ctx);
-
-// ImIpmiHost *createHost(const char *hostname);
-// void destroyHost(ImIpmiHost *host);
+Context *InitContext();
+void DestroyContext(Context *ctx);
