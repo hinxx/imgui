@@ -172,6 +172,7 @@
 #include <unistd.h>             // for usleep()
 #endif
 #include <stdio.h>              // for snprintf()
+#include <stdlib.h>             // for getenv(), atoi()
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
@@ -213,6 +214,18 @@
 #define GLFW_HAS_GETKEYNAME             (GLFW_VERSION_COMBINED >= 3200) // 3.2+ glfwGetKeyName()
 #define GLFW_HAS_GETERROR               (GLFW_VERSION_COMBINED >= 3300) // 3.3+ glfwGetError()
 #define GLFW_HAS_GETPLATFORM            (GLFW_VERSION_COMBINED >= 3400) // 3.4+ glfwGetPlatform()
+#define GLFW_HAS_SETWINDOWATTRIB        (GLFW_VERSION_COMBINED >= 3300) // 3.3+ glfwSetWindowAttrib()
+
+// Multi-viewport: number of hidden platform windows kept alive for reuse instead of being destroyed.
+// Creating a window + GL context and destroying it can cost 40-70 ms each on some X11/WM setups, which is
+// very visible as a stall when it happens while the user is dragging a window in or out of the main window.
+// Recycling trades that for a few MB of idle windows. Set to 0 to restore plain create-on-demand behavior.
+// The IMGUI_GLFW_WINDOW_POOL environment variable overrides this at runtime (0 = disabled), so the
+// difference can be A/B tested in a single build.
+#ifndef IMGUI_IMPL_GLFW_WINDOW_POOL_SIZE
+#define IMGUI_IMPL_GLFW_WINDOW_POOL_SIZE 2
+#endif
+
 
 // Map GLFWWindow* to ImGuiContext*.
 // - Would be simpler if we could use glfwSetWindowUserPointer()/glfwGetWindowUserPointer(), but this is a single and shared resource.
@@ -239,6 +252,15 @@ typedef int  (*PFN_XFlush)(Display*);
 #endif
 
 // GLFW data
+// A hidden platform window kept for reuse. We remember the attributes it currently has, so that
+// reusing it only costs a glfwSetWindowAttrib() call when they actually differ from what is wanted.
+struct ImGui_ImplGlfw_PooledWindow
+{
+    GLFWwindow* Window;
+    bool        Decorated;
+    bool        TopMost;
+};
+
 struct ImGui_ImplGlfw_Data
 {
     ImGuiContext*           Context;
@@ -258,6 +280,8 @@ struct ImGui_ImplGlfw_Data
     bool                    InstalledCallbacks;
     bool                    CallbacksChainForAllWindows;
     char                    BackendPlatformName[40];
+    ImVector<ImGui_ImplGlfw_PooledWindow> WindowPool;
+    int                     WindowPoolSize;         // Runtime pool size; see IMGUI_GLFW_WINDOW_POOL
 #ifdef EMSCRIPTEN_USE_EMBEDDED_GLFW3
     const char*             CanvasSelector;
 #endif
@@ -1374,6 +1398,53 @@ static void ImGui_ImplGlfw_SetWindowFloating(ImGui_ImplGlfw_Data* bd, GLFWwindow
 }
 #endif // IMGUI_GLFW_HAS_SETWINDOWFLOATING
 
+// Create a hidden platform window with the attributes a viewport would want. Shared by the on-demand
+// creation path and by the pool pre-warming, so both produce identical windows.
+static GLFWwindow* ImGui_ImplGlfw_CreateRawWindow(ImGui_ImplGlfw_Data* bd, int w, int h, bool decorated, bool topmost)
+{
+    // GLFW 3.2 unfortunately always set focus on glfwCreateWindow() if GLFW_VISIBLE is set, regardless of GLFW_FOCUSED
+    // With GLFW 3.3, the hint GLFW_FOCUS_ON_SHOW fixes this problem
+    glfwWindowHint(GLFW_VISIBLE, false);
+    glfwWindowHint(GLFW_FOCUSED, false);
+#if GLFW_HAS_FOCUS_ON_SHOW
+    glfwWindowHint(GLFW_FOCUS_ON_SHOW, false);
+#endif
+    glfwWindowHint(GLFW_DECORATED, decorated);
+#if GLFW_HAS_WINDOW_TOPMOST
+    glfwWindowHint(GLFW_FLOATING, topmost);
+#else
+    IM_UNUSED(topmost);
+#endif
+    GLFWwindow* share_window = (bd->ClientApi == GlfwClientApi_OpenGL) ? bd->Window : nullptr;
+    GLFWwindow* window = glfwCreateWindow(w, h, "No Title Yet", nullptr, share_window);
+    if (window == nullptr)
+        return nullptr;
+    ImGui_ImplGlfw_ContextMap_Add(window, bd->Context);
+#ifdef IMGUI_GLFW_HAS_SETWINDOWFLOATING
+    ImGui_ImplGlfw_SetWindowFloating(bd, window);
+#endif
+
+    // Install GLFW callbacks for secondary viewports
+    glfwSetWindowFocusCallback(window, ImGui_ImplGlfw_WindowFocusCallback);
+    glfwSetCursorEnterCallback(window, ImGui_ImplGlfw_CursorEnterCallback);
+    glfwSetCursorPosCallback(window, ImGui_ImplGlfw_CursorPosCallback);
+    glfwSetMouseButtonCallback(window, ImGui_ImplGlfw_MouseButtonCallback);
+    glfwSetScrollCallback(window, ImGui_ImplGlfw_ScrollCallback);
+    glfwSetKeyCallback(window, ImGui_ImplGlfw_KeyCallback);
+    glfwSetCharCallback(window, ImGui_ImplGlfw_CharCallback);
+    glfwSetWindowCloseCallback(window, ImGui_ImplGlfw_WindowCloseCallback);
+    glfwSetWindowPosCallback(window, ImGui_ImplGlfw_WindowPosCallback);
+    glfwSetWindowSizeCallback(window, ImGui_ImplGlfw_WindowSizeCallback);
+    if (bd->ClientApi == GlfwClientApi_OpenGL)
+    {
+        GLFWwindow* backup_context = glfwGetCurrentContext();
+        glfwMakeContextCurrent(window);
+        glfwSwapInterval(0);
+        glfwMakeContextCurrent(backup_context);
+    }
+    return window;
+}
+
 static void ImGui_ImplGlfw_CreateWindow(ImGuiViewport* viewport)
 {
     ImGui_ImplGlfw_Data* bd = ImGui_ImplGlfw_GetBackendData();
@@ -1385,25 +1456,40 @@ static void ImGui_ImplGlfw_CreateWindow(ImGuiViewport* viewport)
     bd->MouseIgnoreButtonUpWaitForFocusLoss = true;
 #endif
 
-    // GLFW 3.2 unfortunately always set focus on glfwCreateWindow() if GLFW_VISIBLE is set, regardless of GLFW_FOCUSED
-    // With GLFW 3.3, the hint GLFW_FOCUS_ON_SHOW fixes this problem
-    glfwWindowHint(GLFW_VISIBLE, false);
-    glfwWindowHint(GLFW_FOCUSED, false);
-#if GLFW_HAS_FOCUS_ON_SHOW
-    glfwWindowHint(GLFW_FOCUS_ON_SHOW, false);
-#endif
-    glfwWindowHint(GLFW_DECORATED, (viewport->Flags & ImGuiViewportFlags_NoDecoration) ? false : true);
+    const bool decorated = (viewport->Flags & ImGuiViewportFlags_NoDecoration) ? false : true;
+    const bool topmost = (viewport->Flags & ImGuiViewportFlags_TopMost) ? true : false;
+
+    // Reuse a recycled window if we have one, instead of paying for window + context creation here.
+    GLFWwindow* window = nullptr;
+    for (int n = bd->WindowPool.Size - 1; n >= 0 && window == nullptr; n--)
+    {
+        ImGui_ImplGlfw_PooledWindow& pooled = bd->WindowPool[n];
+#if GLFW_HAS_SETWINDOWATTRIB
+        if (pooled.Decorated != decorated)
+            glfwSetWindowAttrib(pooled.Window, GLFW_DECORATED, decorated);
 #if GLFW_HAS_WINDOW_TOPMOST
-    glfwWindowHint(GLFW_FLOATING, (viewport->Flags & ImGuiViewportFlags_TopMost) ? true : false);
+        if (pooled.TopMost != topmost)
+            glfwSetWindowAttrib(pooled.Window, GLFW_FLOATING, topmost);
 #endif
-    GLFWwindow* share_window = (bd->ClientApi == GlfwClientApi_OpenGL) ? bd->Window : nullptr;
-    vd->Window = glfwCreateWindow((int)viewport->Size.x, (int)viewport->Size.y, "No Title Yet", nullptr, share_window);
+#else
+        // Without glfwSetWindowAttrib() those attributes are fixed at creation time, so only reuse an exact match.
+        if (pooled.Decorated != decorated || pooled.TopMost != topmost)
+            continue;
+#endif
+        window = pooled.Window;
+        bd->WindowPool.erase(&pooled);
+
+        // The window already exists, so resizing/moving it below will emit callbacks that we must not
+        // mistake for the user moving or resizing the window.
+        vd->IgnoreWindowPosEventFrame = vd->IgnoreWindowSizeEventFrame = ImGui::GetFrameCount();
+        glfwSetWindowSize(window, (int)viewport->Size.x, (int)viewport->Size.y);
+    }
+    if (window == nullptr)
+        window = ImGui_ImplGlfw_CreateRawWindow(bd, (int)viewport->Size.x, (int)viewport->Size.y, decorated, topmost);
+
+    vd->Window = window;
     vd->WindowOwned = true;
-    ImGui_ImplGlfw_ContextMap_Add(vd->Window, bd->Context);
     viewport->PlatformHandle = (void*)vd->Window;
-#ifdef IMGUI_GLFW_HAS_SETWINDOWFLOATING
-    ImGui_ImplGlfw_SetWindowFloating(bd, vd->Window);
-#endif
 #ifdef _WIN32
     viewport->PlatformHandleRaw = glfwGetWin32Window(vd->Window);
     ::SetPropA((HWND)viewport->PlatformHandleRaw, "IMGUI_BACKEND_DATA", bd);
@@ -1411,23 +1497,6 @@ static void ImGui_ImplGlfw_CreateWindow(ImGuiViewport* viewport)
     viewport->PlatformHandleRaw = (void*)glfwGetCocoaWindow(vd->Window);
 #endif
     glfwSetWindowPos(vd->Window, (int)viewport->Pos.x, (int)viewport->Pos.y);
-
-    // Install GLFW callbacks for secondary viewports
-    glfwSetWindowFocusCallback(vd->Window, ImGui_ImplGlfw_WindowFocusCallback);
-    glfwSetCursorEnterCallback(vd->Window, ImGui_ImplGlfw_CursorEnterCallback);
-    glfwSetCursorPosCallback(vd->Window, ImGui_ImplGlfw_CursorPosCallback);
-    glfwSetMouseButtonCallback(vd->Window, ImGui_ImplGlfw_MouseButtonCallback);
-    glfwSetScrollCallback(vd->Window, ImGui_ImplGlfw_ScrollCallback);
-    glfwSetKeyCallback(vd->Window, ImGui_ImplGlfw_KeyCallback);
-    glfwSetCharCallback(vd->Window, ImGui_ImplGlfw_CharCallback);
-    glfwSetWindowCloseCallback(vd->Window, ImGui_ImplGlfw_WindowCloseCallback);
-    glfwSetWindowPosCallback(vd->Window, ImGui_ImplGlfw_WindowPosCallback);
-    glfwSetWindowSizeCallback(vd->Window, ImGui_ImplGlfw_WindowSizeCallback);
-    if (bd->ClientApi == GlfwClientApi_OpenGL)
-    {
-        glfwMakeContextCurrent(vd->Window);
-        glfwSwapInterval(0);
-    }
     bd->LastMouseCursor = nullptr; // Invalidate so that cursor is set again
 }
 
@@ -1449,8 +1518,27 @@ static void ImGui_ImplGlfw_DestroyWindow(ImGuiViewport* viewport)
                 if (bd->KeyOwnerWindows[i] == vd->Window)
                     ImGui_ImplGlfw_KeyCallback(vd->Window, i, 0, GLFW_RELEASE, 0); // Later params are only used for main viewport, on which this function is never called.
 
-            ImGui_ImplGlfw_ContextMap_Remove(vd->Window);
-            glfwDestroyWindow(vd->Window);
+            if (bd->MouseWindow == vd->Window)
+                bd->MouseWindow = nullptr;
+            if (bd->WindowPool.Size < bd->WindowPoolSize)
+            {
+                // Recycle instead of destroying: hiding is immediate, glfwDestroyWindow() is not.
+                glfwHideWindow(vd->Window);
+                ImGui_ImplGlfw_PooledWindow pooled;
+                pooled.Window = vd->Window;
+                pooled.Decorated = glfwGetWindowAttrib(vd->Window, GLFW_DECORATED) != 0;
+#if GLFW_HAS_WINDOW_TOPMOST
+                pooled.TopMost = glfwGetWindowAttrib(vd->Window, GLFW_FLOATING) != 0;
+#else
+                pooled.TopMost = false;
+#endif
+                bd->WindowPool.push_back(pooled);
+            }
+            else
+            {
+                ImGui_ImplGlfw_ContextMap_Remove(vd->Window);
+                glfwDestroyWindow(vd->Window);
+            }
         }
         vd->Window = nullptr;
         IM_DELETE(vd);
@@ -1662,11 +1750,37 @@ static void ImGui_ImplGlfw_InitMultiViewportSupport()
     vd->WindowOwned = false;
     main_viewport->PlatformUserData = vd;
     main_viewport->PlatformHandle = (void*)bd->Window;
+
+    // Pre-create hidden windows so that the first viewport creation doesn't pay for it at a bad moment
+    // (e.g. in the middle of a window drag). They are created with the attributes our windows normally use.
+    bd->WindowPoolSize = IMGUI_IMPL_GLFW_WINDOW_POOL_SIZE;
+    if (const char* env = getenv("IMGUI_GLFW_WINDOW_POOL"))
+        bd->WindowPoolSize = atoi(env);
+    if (bd->WindowPoolSize < 0)
+        bd->WindowPoolSize = 0;
+    for (int n = 0; n < bd->WindowPoolSize; n++)
+        if (GLFWwindow* window = ImGui_ImplGlfw_CreateRawWindow(bd, 256, 256, false, false))
+        {
+            ImGui_ImplGlfw_PooledWindow pooled;
+            pooled.Window = window;
+            pooled.Decorated = false;
+            pooled.TopMost = false;
+            bd->WindowPool.push_back(pooled);
+        }
 }
 
 static void ImGui_ImplGlfw_ShutdownMultiViewportSupport()
 {
     ImGui::DestroyPlatformWindows();
+
+    // DestroyPlatformWindows() may have recycled windows into the pool: destroy them for real now.
+    ImGui_ImplGlfw_Data* bd = ImGui_ImplGlfw_GetBackendData();
+    for (ImGui_ImplGlfw_PooledWindow& pooled : bd->WindowPool)
+    {
+        ImGui_ImplGlfw_ContextMap_Remove(pooled.Window);
+        glfwDestroyWindow(pooled.Window);
+    }
+    bd->WindowPool.clear();
 }
 
 //-----------------------------------------------------------------------------
