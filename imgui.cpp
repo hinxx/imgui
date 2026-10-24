@@ -1786,6 +1786,7 @@ ImGuiIO::ImGuiIO()
 
     // Viewport options (when ImGuiConfigFlags_ViewportsEnable is set)
     ConfigViewportsNoAutoMerge = false;
+    ConfigViewportsOwnViewportOnMove = false;
     ConfigViewportsNoTaskBarIcon = false;
     ConfigViewportsNoDecoration = true;
     ConfigViewportsNoDefaultParent = true;
@@ -17658,7 +17659,10 @@ static void ImGui::WindowSelectViewport(ImGuiWindow* window)
     }
     else if (g.MovingWindow && g.MovingWindow->RootWindowDockTree == window && IsMousePosValid())
     {
-        if (window->Viewport != NULL && window->Viewport->Window == window)
+        // Keep our own viewport while being moved. With ConfigViewportsOwnViewportOnMove, take one right
+        // away instead of waiting until we no longer fit the host viewport: the platform window creation
+        // then happens on mouse-down rather than mid-drag.
+        if ((window->Viewport != NULL && window->Viewport->Window == window) || g.IO.ConfigViewportsOwnViewportOnMove)
             window->Viewport = AddUpdateViewport(window, window->ID, window->Pos, window->Size, ImGuiViewportFlags_None);
     }
     else
