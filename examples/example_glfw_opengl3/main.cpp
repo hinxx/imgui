@@ -10,7 +10,10 @@
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
+#include "imgui_internal.h"     // [observe] g.DebugLogFlags, g.MovingWindow
 #include <stdio.h>
+#include <stdlib.h>             // [observe] getenv
+#include <time.h>               // [observe] nanosleep
 #define GL_SILENCE_DEPRECATION
 #if defined(IMGUI_IMPL_OPENGL_ES2)
 #include <GLES2/gl2.h>
@@ -73,7 +76,40 @@ int main(int, char**)
     if (window == nullptr)
         return 1;
     glfwMakeContextCurrent(window);
-    glfwSwapInterval(1); // Enable vsync
+    // ---------------------------------------------------------------------------------------------
+    // [repro] Multi-viewport window-dragging experiments on X11. Everything here is switched by the
+    // environment so a single build can be A/B tested:
+    //
+    //   IMGUI_LATELATCH=<hz>     Keep vsync, but after presenting a frame, re-poll the mouse and
+    //                            re-issue ONLY the dragged window's OS position until just before the
+    //                            next vblank. A dragged window only changes position - its pixels are
+    //                            identical - so this costs no redraw. 500 works well. THIS is what
+    //                            removes the wobble while dragging a window around the desktop.
+    //   IMGUI_GLFW_WINDOW_POOL=<n>  Read by the GLFW backend: how many hidden platform windows to keep
+    //                            for reuse instead of destroying them. 0 = stock create-on-demand,
+    //                            which costs a ~70 ms stall at the moment a window is pulled out of
+    //                            the main window. Default 2.
+    //   IMGUI_OWNVP=1            io.ConfigViewportsOwnViewportOnMove: give a window its own platform
+    //                            window as soon as you press its title bar, instead of when it first
+    //                            stops fitting in the main window. The ~40-70 ms creation cost then
+    //                            lands on the click (barely noticeable) instead of mid-drag. Pair it
+    //                            with IMGUI_LATELATCH, since the window is then WM-moved the whole time.
+    //   IMGUI_DIAG=1             Print the measurements: viewport/docking event log, any frame over
+    //                            30 ms, and per-frame lag of the dragged OS window behind the mouse.
+    //   IMGUI_NOVSYNC=1          Run off vsync entirely (smooth, but spins the GPU). Superseded by
+    //                            IMGUI_LATELATCH; kept for comparison.
+    //   IMGUI_FPSCAP=<n>         With IMGUI_NOVSYNC, limit to n fps instead of spinning flat out.
+    // ---------------------------------------------------------------------------------------------
+    const bool novsync = getenv("IMGUI_NOVSYNC") != nullptr;
+    const double fpscap = getenv("IMGUI_FPSCAP") ? atof(getenv("IMGUI_FPSCAP")) : 0.0;
+    const double latelatch = getenv("IMGUI_LATELATCH") ? atof(getenv("IMGUI_LATELATCH")) : 0.0;
+    const bool diag = getenv("IMGUI_DIAG") != nullptr;
+    const bool ownvp = getenv("IMGUI_OWNVP") != nullptr;
+    setvbuf(stdout, NULL, _IOLBF, 0);   // line-buffered, so the output above survives redirection
+    printf("[repro] IMGUI_LATELATCH=%.0f IMGUI_OWNVP=%d IMGUI_GLFW_WINDOW_POOL=%s IMGUI_DIAG=%d IMGUI_NOVSYNC=%d IMGUI_FPSCAP=%.0f\n",
+           latelatch, ownvp ? 1 : 0, getenv("IMGUI_GLFW_WINDOW_POOL") ? getenv("IMGUI_GLFW_WINDOW_POOL") : "default(2)",
+           diag ? 1 : 0, novsync ? 1 : 0, fpscap);
+    glfwSwapInterval(novsync ? 0 : 1);
 
     // Setup Dear ImGui context
     IMGUI_CHECKVERSION();
@@ -82,7 +118,8 @@ int main(int, char**)
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;         // Enable Docking
-    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;       // Enable Multi-Viewport / Platform Windows
+    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;   // Enable Multi-Viewport / Platform Windows
+    io.ConfigViewportsOwnViewportOnMove = ownvp;        // [repro] IMGUI_OWNVP
     //io.ConfigViewportsNoAutoMerge = true;
     //io.ConfigViewportsNoTaskBarIcon = true;
 
@@ -115,6 +152,13 @@ int main(int, char**)
     ImGui_ImplGlfw_InstallEmscriptenCallbacks(window, "#canvas");
 #endif
     ImGui_ImplOpenGL3_Init(glsl_version);
+
+    // [repro] IMGUI_DIAG: mirror the Viewport/Docking event log to the terminal from startup.
+    // (The same flags are tickable at runtime in Demo -> Tools -> Debug Log.)
+    if (diag)
+        ImGui::GetCurrentContext()->DebugLogFlags |= ImGuiDebugLogFlags_EventViewport
+                                                  |  ImGuiDebugLogFlags_EventDocking
+                                                  |  ImGuiDebugLogFlags_OutputToTTY;
 
     // Load Fonts
     // - If fonts are not explicitly loaded, Dear ImGui will select an embedded font: either AddFontDefaultVector() or AddFontDefaultBitmap().
@@ -224,6 +268,86 @@ int main(int, char**)
         }
 
         glfwSwapBuffers(window);
+
+        if (latelatch > 0.0)
+        {
+            ImGuiContext& g = *ImGui::GetCurrentContext();
+            ImGuiWindow* mw = g.MovingWindow;
+            ImGuiViewport* mvp = mw ? mw->Viewport : nullptr;
+            if (mw && mvp && mvp != ImGui::GetMainViewport() && mvp->PlatformHandle != nullptr)
+            {
+                const double budget = 1000.0 / 60.0 - 5.0;      // headroom so we still make the next vblank
+                const double step = 1000.0 / latelatch;
+                const double t_begin = glfwGetTime() * 1000.0;
+                int n = 0;
+                while (glfwGetTime() * 1000.0 - t_begin < budget)
+                {
+                    const double wait = (n + 1) * step - (glfwGetTime() * 1000.0 - t_begin);
+                    if (wait > 0.0)
+                    {
+                        struct timespec ts; ts.tv_sec = 0; ts.tv_nsec = (long)(wait * 1e6);
+                        nanosleep(&ts, nullptr);
+                    }
+                    glfwPollEvents();
+                    double cx = 0.0, cy = 0.0; int wx = 0, wy = 0;
+                    glfwGetCursorPos(window, &cx, &cy);
+                    glfwGetWindowPos(window, &wx, &wy);
+                    const ImVec2 pos((float)(wx + cx) - g.ActiveIdClickOffset.x, (float)(wy + cy) - g.ActiveIdClickOffset.y);
+                    // Via the backend hook, so it marks the frame and the move isn't echoed back as a user move.
+                    ImGui::GetPlatformIO().Platform_SetWindowPos(mvp, pos);
+                    n++;
+                }
+            }
+        }
+
+        if (fpscap > 0.0)
+        {
+            // [observe] Keep the loop running above the display rate without burning a full core.
+            static double next_deadline = 0.0;
+            const double period = 1000.0 / fpscap;
+            const double now = glfwGetTime() * 1000.0;
+            if (next_deadline < now - period)
+                next_deadline = now;
+            next_deadline += period;
+            const double wait = next_deadline - now;
+            if (wait > 0.0)
+            {
+                struct timespec ts;
+                ts.tv_sec = (time_t)(wait / 1000.0);
+                ts.tv_nsec = (long)((wait - ts.tv_sec * 1000.0) * 1e6);
+                nanosleep(&ts, nullptr);
+            }
+        }
+
+        // [repro] IMGUI_DIAG: while dragging a window that has its own OS window, log how far behind the
+        // mouse the real OS window is. 0 = moving in lockstep; a value that keeps changing is the wobble.
+        if (diag)
+        {
+            ImGuiContext& g = *ImGui::GetCurrentContext();
+            ImGuiWindow* mw = g.MovingWindow;
+            if (mw && mw->Viewport && mw->Viewport != ImGui::GetMainViewport() && mw->Viewport->PlatformHandle)
+            {
+                int ox = 0, oy = 0;
+                glfwGetWindowPos((GLFWwindow*)mw->Viewport->PlatformHandle, &ox, &oy);
+                ImVec2 want(ImGui::GetIO().MousePos.x - g.ActiveIdClickOffset.x, ImGui::GetIO().MousePos.y - g.ActiveIdClickOffset.y);
+                printf("[drag] f=%d os=%d,%d want=%.0f,%.0f lag=%.0f,%.0f dt=%.1f\n",
+                       g.FrameCount, ox, oy, want.x, want.y, ox - want.x, oy - want.y, ImGui::GetIO().DeltaTime * 1000.0f);
+            }
+        }
+
+        // [repro] IMGUI_DIAG: report any frame slower than 30 ms. That is the stall you see when a
+        // window is pulled out of (or merged back into) the main window.
+        if (diag)
+        {
+            ImGuiContext& g = *ImGui::GetCurrentContext();
+            static double t_prev = 0.0;
+            double t_now = glfwGetTime() * 1000.0;
+            if (t_prev > 0.0 && t_now - t_prev > 30.0)
+                printf("[observe] frame %d took %6.1f ms   viewports=%d   moving=%s\n",
+                       g.FrameCount, t_now - t_prev, g.Viewports.Size,
+                       g.MovingWindow ? g.MovingWindow->Name : "-");
+            t_prev = t_now;
+        }
     }
 #ifdef __EMSCRIPTEN__
     EMSCRIPTEN_MAINLOOP_END;
